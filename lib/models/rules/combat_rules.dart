@@ -91,12 +91,15 @@ class CombatRules {
 
     final total = modifiersNumber + rollNumber + baseDefenseNumber + numberOfDefensesModifier + modifierNumber + surpriseNumber;
 
+    // Capea defensa total a 0.
+    final cappedTotal = max(total, 0);
+
     return ExplainedText(
       title: 'Defensa final',
-      text: 'Resultado en defensa: $total',
+      text: 'Resultado en defensa: $cappedTotal',
       explanation:
-          'Base: $baseDefenseNumber + Modificador: $modifierNumber + "Tirada: $rollNumber + Modificadores: $modifiersNumber + Sorpresa: $surpriseNumber + Penalizador por defensas: $numberOfDefensesModifier',
-      result: total,
+          'Base: $baseDefenseNumber + Modificador: $modifierNumber + Tirada: $rollNumber + Modificadores: $modifiersNumber + Sorpresa: $surpriseNumber + Penalizador por defensas: $numberOfDefensesModifier' + '(Capeado a 0)',
+      result: cappedTotal,
     );
   }
 
@@ -116,8 +119,23 @@ class CombatRules {
 
     final difference = (attackValue.result ?? 0) - (defenseValue.result ?? 0);
 
+    // If the attack fumbled, it cannot cause damage regardless of final values.
+    final fumbleRegex = RegExp(r'Pifia[: ]+(\d+)');
+    final fumbleMatch = fumbleRegex.firstMatch(attackValue.text) ?? fumbleRegex.firstMatch(attackValue.explanation);
+    final bool attackFumbled = fumbleMatch != null;
+
     final finalResult = (difference - (finalAbsorption.result ?? 0)).roundToTens;
-    final damageDone = max(((finalResult / 100) * baseDamage).toInt(), 0);
+    var damageDone = max(((finalResult / 100) * baseDamage).toInt(), 0);
+
+    if (attackFumbled) {
+      // Ensure no damage is done when attacker fumbled.
+      damageDone = 0;
+      info.add(
+        explanation: 'La tirada fue una pifia: el ataque no realiza daño',
+        text: 'No realiza daños (pifia)',
+        reference: BookReference(page: 87, book: Books.coreExxet),
+      );
+    }
 
     info
       ..add(
@@ -134,7 +152,7 @@ class CombatRules {
         result: damageDone,
       );
 
-    if (difference <= 0) {
+    if (!attackFumbled && difference <= 0) {
       info.add(
         explanation: 'No realiza daños',
         reference: BookReference(page: 87, book: Books.coreExxet),
@@ -165,8 +183,17 @@ class CombatRules {
     info.explanations.add(defenseValue);
 
     final difference = (attackValue.result ?? 0) - (defenseValue.result ?? 0);
-
     var counterBonus = 0;
+
+    // Detect fumble magnitude from the attack text (finalAttackValue adds a
+    // 'Pifia: X' entry when a fumble happened). If present, the defender may
+    // use that magnitude as a counter bonus regardless of the roll.
+    final fumbleRegex = RegExp(r'Pifia[: ]+(\d+)');
+    final fumbleMatch = fumbleRegex.firstMatch(attackValue.text) ?? fumbleRegex.firstMatch(attackValue.explanation);
+    final int fumbleMagnitude = fumbleMatch != null ? int.tryParse(fumbleMatch.group(1) ?? '0') ?? 0 : 0;
+
+    // If the attacker fumbled, allow counter even if difference >= 0.
+    final shouldConsiderCounter = (difference < 0) || (fumbleMagnitude > 0);
 
     if (difference < 0 && (defender?.profile.damageAccumulation ?? false)) {
       info.add(
@@ -177,18 +204,22 @@ class CombatRules {
       return info;
     }
 
+    if (!shouldConsiderCounter) return null;
+
+    // Normal counter bonus derived from the ATK-DEF difference.
     if (difference < 0) {
       counterBonus = (-difference ~/ 2).roundToFives;
       counterBonus = min(counterBonus, 150);
-
-      info.add(
-        text: 'El defensor puede contraatacar con un bonificador de: $counterBonus',
-        explanation: 'diferencia / 2 redondeado a 5, con un máximo de 150',
-        reference: BookReference(page: 87, book: Books.coreExxet),
-      );
-    } else {
-      return null;
     }
+
+    // Choose the highest between the fumble magnitude and the calculated bonus.
+    final chosenBonus = max(counterBonus, fumbleMagnitude);
+
+    info.add(
+      text: 'El defensor puede contraatacar con un bonificador de: $chosenBonus',
+      explanation: 'Mayor entre diferencia/2 redondeado a 5 (max 150) y la pifia del atacante ($fumbleMagnitude)',
+      reference: BookReference(page: 87, book: Books.coreExxet),
+    );
 
     return info;
   }
